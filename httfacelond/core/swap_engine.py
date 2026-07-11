@@ -282,6 +282,46 @@ class SwapEngine:
         soft_mask = soft_mask * soft_mask * (3.0 - 2.0 * soft_mask)
         return np.expand_dims(soft_mask, axis=2)
 
+    def _face_geometry_issue(self, face):
+        """
+        Returns a short reason when the detected face is too profile/occluded for a stable swap.
+        INSwapper is very sensitive to bad 5-point alignment; skipping those frames looks better
+        than forcing a warped face when the person turns away or an object covers the face.
+        """
+        bbox = np.asarray(face.bbox, dtype=np.float32)
+        kps = getattr(face, 'kps', None)
+        score = float(getattr(face, 'det_score', 0.0))
+
+        if kps is None:
+            return "missing keypoints"
+
+        kps = np.asarray(kps, dtype=np.float32)
+        if kps.shape[0] < 5 or not np.all(np.isfinite(kps[:5])):
+            return "invalid keypoints"
+
+        face_w = max(float(bbox[2] - bbox[0]), 1.0)
+        face_h = max(float(bbox[3] - bbox[1]), 1.0)
+        eye_dist = float(np.linalg.norm(kps[0] - kps[1]))
+        mouth_width = float(np.linalg.norm(kps[3] - kps[4]))
+        eye_mid = (kps[0] + kps[1]) * 0.5
+        mouth_mid = (kps[3] + kps[4]) * 0.5
+        eye_to_mouth = float(np.linalg.norm(eye_mid - mouth_mid))
+
+        if score < 0.35:
+            return f"low confidence ({score:.2f})"
+        if eye_dist < face_w * 0.16 or eye_dist > face_w * 0.78:
+            return "unstable eye geometry"
+        if eye_to_mouth < face_h * 0.18 or eye_to_mouth > face_h * 0.82:
+            return "unstable vertical geometry"
+        if mouth_width < eye_dist * 0.25 or mouth_width > eye_dist * 1.75:
+            return "unstable mouth geometry"
+
+        yaw_score = abs(float(kps[2][0] - eye_mid[0])) / max(eye_dist, 1.0)
+        if yaw_score > 0.48:
+            return f"extreme profile/turn ({yaw_score:.2f})"
+
+        return None
+
     def face_swap(self, source_img, target_img, enhance=True, enhance_strength=0.8, match_color=True, match_scale=False, custom_scale=1.0, det_thresh=0.5, face_upscale_resolution="512", handle_occlusions=True, target_rotation=None, log_callback=None, swap_blend_strength=0.85, match_face_shape=True, pipeline=None, target_faces=None, target_detector="SCRFD (Default)", face_mask_type="InsightFace 106-Point"):
         """
         Swaps face from source_img onto target_img with auto-rotation, upscaling, and occlusion handling.
@@ -411,6 +451,11 @@ class SwapEngine:
         log(f"[Process] Found {len(target_faces)} valid target face(s) for swap.")
         result = target_oriented.copy() if hasattr(target_oriented, 'copy') else target_oriented
         for idx, face in enumerate(target_faces):
+            geometry_issue = self._face_geometry_issue(face)
+            if geometry_issue:
+                log(f"[Face {idx+1}] Skipping unstable face swap: {geometry_issue}.")
+                continue
+
             log(f"[Face {idx+1}] Swapping with score: {face.det_score:.2f}...")
             # Calculate scale factor
             scale_factor = custom_scale
