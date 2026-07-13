@@ -653,7 +653,8 @@ class SwapEngine:
             profile_controls = self._profile_swap_controls(alignment_note, enhance, enhance_strength, swap_blend_strength, match_color)
             if alignment_note:
                 log(f"[Face {idx+1}] Forcing difficult-angle swap: {alignment_note}.")
-                log(f"[Face {idx+1}] Auto profile mode: blend={profile_controls['swap_blend_strength']:.2f}, enhance={profile_controls['enhance_strength']:.2f}.")
+                enhance_status = f"{profile_controls['enhance_strength']:.2f}" if profile_controls["enhance"] else "off"
+                log(f"[Face {idx+1}] Auto profile mode: blend={profile_controls['swap_blend_strength']:.2f}, enhance={enhance_status}.")
 
             log(f"[Face {idx+1}] Swapping with score: {face.det_score:.2f}...")
             # Calculate scale factor
