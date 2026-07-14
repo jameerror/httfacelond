@@ -574,6 +574,86 @@ def _overlay_rgba(frame, overlay, center_x, center_y):
     frame[by1:by2, bx1:bx2] = np.clip(rgb * alpha + base * (1.0 - alpha), 0, 255).astype(np.uint8)
     return frame
 
+def _detect_head_anchor(frame, anchor_mode, head_scale, vertical_offset, pose_result=None):
+    height, width = frame.shape[:2]
+    if pose_result is not None and pose_result.pose_landmarks:
+        lm = pose_result.pose_landmarks.landmark
+        left_shoulder = lm[11]
+        right_shoulder = lm[12]
+        shoulder_vis = min(left_shoulder.visibility, right_shoulder.visibility)
+        if shoulder_vis > 0.25:
+            lx, ly = left_shoulder.x * width, left_shoulder.y * height
+            rx, ry = right_shoulder.x * width, right_shoulder.y * height
+            sx = (lx + rx) * 0.5
+            sy = (ly + ry) * 0.5
+            shoulder_w = max(float(np.hypot(lx - rx, ly - ry)), width * 0.08)
+
+            if anchor_mode == "Face Re-entry Assist" and lm[0].visibility > 0.35:
+                anchor_x = lm[0].x * width
+                anchor_y = lm[0].y * height
+            elif anchor_mode == "Manual Center Anchor":
+                anchor_x = width * 0.5
+                anchor_y = height * 0.38
+            else:
+                anchor_x = sx
+                anchor_y = sy - shoulder_w * (0.95 - vertical_offset * 0.45)
+
+            head_h = shoulder_w * 1.18 * float(head_scale)
+            return np.array([anchor_x, anchor_y, head_h * 0.78, head_h], dtype=np.float32)
+
+    if anchor_mode == "Manual Center Anchor":
+        head_h = height * 0.28 * float(head_scale)
+        return np.array([width * 0.5, height * (0.38 + vertical_offset * 0.15), head_h * 0.78, head_h], dtype=np.float32)
+    return None
+
+def _apply_proxy_head(frame, anchor):
+    if anchor is None:
+        return frame
+    ow = max(24, int(anchor[2]))
+    oh = max(32, int(anchor[3]))
+    head_rgba = _make_proxy_head_rgba(ow, oh)
+    return _overlay_rgba(frame, head_rgba, anchor[0], anchor[1])
+
+def perform_3d_head_image_composite(head_model, target_image, anchor_mode, render_backend, head_scale, vertical_offset):
+    logs = "[3D Head Image] Initializing image composite pipeline...\n"
+    model_path = _resolve_uploaded_path(head_model)
+
+    if not model_path:
+        return None, logs + "[Error] Upload a 3D head model first.\n"
+    if target_image is None:
+        return None, logs + "[Error] Upload a target image first.\n"
+
+    supported_exts = (".glb", ".gltf", ".obj", ".fbx", ".blend")
+    model_ext = os.path.splitext(str(model_path))[1].lower()
+    if model_ext not in supported_exts:
+        return None, logs + f"[Error] Unsupported 3D model format: {model_ext}. Use GLB, GLTF, OBJ, FBX, or BLEND.\n"
+
+    if render_backend not in ("CPU Preview (Working)", "CPU Preview"):
+        logs += f"[Warning] {render_backend} is reserved for the full renderer path. Running CPU Preview backend now.\n"
+
+    try:
+        import mediapipe as mp
+
+        frame = cv2.cvtColor(target_image, cv2.COLOR_RGB2BGR)
+        mp_pose = mp.solutions.pose
+        with mp_pose.Pose(static_image_mode=True, model_complexity=1, enable_segmentation=False, min_detection_confidence=0.35) as pose:
+            result = pose.process(target_image)
+
+        anchor = _detect_head_anchor(frame, anchor_mode, head_scale, vertical_offset, result)
+        if anchor is None:
+            return None, logs + "[Error] Could not detect neck/shoulders. Try Manual Center Anchor.\n"
+
+        frame = _apply_proxy_head(frame, anchor)
+        logs += f"[3D Head Image] Model: {model_path}\n"
+        logs += f"[3D Head Image] Anchor mode: {anchor_mode}\n"
+        logs += "[3D Head Image] CPU Preview rendered a tracked proxy head on the image.\n"
+        return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), logs
+    except Exception as e:
+        import traceback
+        logs += f"[Error] 3D Head image composite failed: {str(e)}\n"
+        logs += traceback.format_exc() + "\n"
+        return None, logs
+
 def perform_3d_head_composite(head_model, target_video, anchor_mode, render_backend, head_scale, vertical_offset, save_path=""):
     logs = "[3D Head] Initializing separate 3D head composite pipeline...\n"
 
@@ -638,44 +718,15 @@ def perform_3d_head_composite(head_model, target_video, anchor_mode, render_back
                 result = pose.process(rgb)
                 anchor = None
 
-                if result.pose_landmarks:
-                    lm = result.pose_landmarks.landmark
-                    left_shoulder = lm[11]
-                    right_shoulder = lm[12]
-                    shoulder_vis = min(left_shoulder.visibility, right_shoulder.visibility)
-                    if shoulder_vis > 0.25:
-                        lx, ly = left_shoulder.x * width, left_shoulder.y * height
-                        rx, ry = right_shoulder.x * width, right_shoulder.y * height
-                        sx = (lx + rx) * 0.5
-                        sy = (ly + ry) * 0.5
-                        shoulder_w = max(float(np.hypot(lx - rx, ly - ry)), width * 0.08)
-
-                        if anchor_mode == "Face Re-entry Assist" and lm[0].visibility > 0.35:
-                            anchor_x = lm[0].x * width
-                            anchor_y = lm[0].y * height
-                        elif anchor_mode == "Manual Center Anchor":
-                            anchor_x = width * 0.5
-                            anchor_y = height * 0.38
-                        else:
-                            anchor_x = sx
-                            anchor_y = sy - shoulder_w * (0.95 - vertical_offset * 0.45)
-
-                        head_h = shoulder_w * 1.18 * float(head_scale)
-                        head_w = head_h * 0.78
-                        anchor = np.array([anchor_x, anchor_y, head_w, head_h], dtype=np.float32)
-                        detected += 1
-                elif anchor_mode == "Manual Center Anchor":
-                    head_h = height * 0.28 * float(head_scale)
-                    anchor = np.array([width * 0.5, height * (0.38 + vertical_offset * 0.15), head_h * 0.78, head_h], dtype=np.float32)
+                anchor = _detect_head_anchor(frame, anchor_mode, head_scale, vertical_offset, result)
+                if anchor is not None and result.pose_landmarks:
+                    detected += 1
 
                 if anchor is not None:
                     last_anchor = anchor if last_anchor is None else (0.28 * anchor + 0.72 * last_anchor)
 
                 if last_anchor is not None:
-                    ow = max(24, int(last_anchor[2]))
-                    oh = max(32, int(last_anchor[3]))
-                    head_rgba = _make_proxy_head_rgba(ow, oh)
-                    frame = _overlay_rgba(frame, head_rgba, last_anchor[0], last_anchor[1])
+                    frame = _apply_proxy_head(frame, last_anchor)
 
                 writer.write(frame)
                 processed += 1
@@ -1179,12 +1230,15 @@ with gr.Blocks() as demo:
                         label="3D Head Model (GLB, GLTF, OBJ, FBX, BLEND)",
                         file_types=[".glb", ".gltf", ".obj", ".fbx", ".blend"],
                     )
+                    head3d_target_image = gr.Image(type="numpy", label="Target Image (Neck/shoulder anchor)", height=220)
                     head3d_target_video = gr.Video(label="Target Video (Neck/shoulder anchor)", height=280)
                     head3d_save_path = gr.Textbox(label="Save Output Video to Path (Optional)", placeholder="e.g. output/head3d_result.mp4", value="")
 
                 with gr.Column(scale=1):
                     gr.Markdown("### 2. Output & Action")
+                    head3d_output_image = gr.Image(type="numpy", label="3D Head Image Result", height=220)
                     head3d_output_video = gr.Video(label="3D Head Composite Result", height=280)
+                    btn_head3d_img = gr.Button("Start 3D Head Image", variant="secondary")
                     btn_head3d = gr.Button("Start 3D Head Composite", variant="primary")
                     head3d_status = gr.Textbox(label="3D Head Process Logs", interactive=False, lines=10, max_lines=14, elem_classes="log-box")
 
@@ -1211,6 +1265,15 @@ with gr.Blocks() as demo:
                     head3d_save_path
                 ],
                 outputs=[head3d_output_video, head3d_status]
+            )
+
+            btn_head3d_img.click(
+                fn=perform_3d_head_image_composite,
+                inputs=[
+                    head3d_model, head3d_target_image, head3d_anchor_mode,
+                    head3d_backend, head3d_scale, head3d_vertical_offset
+                ],
+                outputs=[head3d_output_image, head3d_status]
             )
 
     gr.Markdown("Built with Python, Gradio, ONNX Runtime, and OpenCV.", elem_classes="footer-text")
