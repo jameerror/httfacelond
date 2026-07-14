@@ -641,6 +641,38 @@ def _accessor_array(gltf, bin_chunk, accessor_index):
         arr = _np.frombuffer(raw[:count * item_size], dtype=dtype, count=count * comp_count).reshape((count, comp_count))
     return arr.copy()
 
+def _embedded_image_array(gltf, bin_chunk, image_index):
+    from io import BytesIO
+    from PIL import Image
+
+    image_info = gltf["images"][image_index]
+    view = gltf["bufferViews"][image_info["bufferView"]]
+    start = view.get("byteOffset", 0)
+    end = start + view["byteLength"]
+    image = Image.open(BytesIO(bytes(bin_chunk[start:end]))).convert("RGBA")
+    return np.array(image, dtype=np.uint8)
+
+def _glb_texture_images(gltf, bin_chunk):
+    images = {}
+    for tex_index, texture in enumerate(gltf.get("textures", [])):
+        source_index = texture.get("source")
+        if source_index is None:
+            continue
+        images[tex_index] = _embedded_image_array(gltf, bin_chunk, source_index)
+    return images
+
+def _sample_texture_color(texture_img, uv):
+    if texture_img is None:
+        return None
+    h, w = texture_img.shape[:2]
+    u = float(uv[0] % 1.0)
+    v = float(uv[1] % 1.0)
+    x = int(np.clip(u * (w - 1), 0, w - 1))
+    y = int(np.clip((1.0 - v) * (h - 1), 0, h - 1))
+    rgba = texture_img[y, x].astype(np.float32)
+    alpha = rgba[3] / 255.0
+    return rgba[:3], alpha
+
 def _node_matrix(node):
     if "matrix" in node:
         return np.array(node["matrix"], dtype=np.float32).reshape(4, 4).T
@@ -666,14 +698,22 @@ def _collect_glb_triangles(model_path):
     scene_index = gltf.get("scene", 0)
     scene_nodes = gltf.get("scenes", [{}])[scene_index].get("nodes", list(range(len(nodes))))
     triangles = []
+    texture_images = _glb_texture_images(gltf, bin_chunk)
 
-    def material_color(material_index):
+    def material_diffuse(material_index):
         if material_index is None:
-            return np.array([190, 160, 135], dtype=np.float32)
+            return np.array([190, 160, 135], dtype=np.float32), 1.0, None
         material = gltf.get("materials", [{}])[material_index]
         pbr = material.get("pbrMetallicRoughness", {})
-        color = np.array(pbr.get("baseColorFactor", [0.75, 0.62, 0.52, 1.0])[:3], dtype=np.float32)
-        return np.clip(color * 255.0, 0, 255)
+        spec_gloss = material.get("extensions", {}).get("KHR_materials_pbrSpecularGlossiness", {})
+
+        color_factor = pbr.get("baseColorFactor") or spec_gloss.get("diffuseFactor") or [0.75, 0.62, 0.52, 1.0]
+        color = np.array(color_factor[:3], dtype=np.float32)
+        alpha = float(color_factor[3]) if len(color_factor) > 3 else 1.0
+
+        tex_info = pbr.get("baseColorTexture") or spec_gloss.get("diffuseTexture")
+        tex_img = texture_images.get(tex_info.get("index")) if tex_info else None
+        return np.clip(color * 255.0, 0, 255), alpha, tex_img
 
     def walk(node_index, parent_mat):
         node = nodes[node_index]
@@ -694,11 +734,25 @@ def _collect_glb_triangles(model_path):
                 else:
                     idx = np.arange(pos.shape[0], dtype=np.int64)
 
-                color = material_color(primitive.get("material"))
+                material_color, material_alpha, texture_img = material_diffuse(primitive.get("material"))
+                uvs = None
+                if texture_img is not None and "TEXCOORD_0" in attrs:
+                    uvs = _accessor_array(gltf, bin_chunk, attrs["TEXCOORD_0"]).astype(np.float32)
+
                 for i in range(0, len(idx) - 2, 3):
-                    tri = pos[idx[i:i + 3]]
+                    tri_idx = idx[i:i + 3]
+                    tri = pos[tri_idx]
                     if tri.shape == (3, 3):
-                        triangles.append((tri, color))
+                        color = material_color.copy()
+                        alpha = material_alpha
+                        if uvs is not None:
+                            sampled = _sample_texture_color(texture_img, np.mean(uvs[tri_idx], axis=0))
+                            if sampled is not None:
+                                tex_color, tex_alpha = sampled
+                                color = color * (tex_color / 255.0)
+                                alpha *= tex_alpha
+                        if alpha > 0.02:
+                            triangles.append((tri, color, alpha))
         for child in node.get("children", []):
             walk(child, mat)
 
@@ -718,7 +772,7 @@ def _render_model_rgba(model_path, width, height):
         return _make_proxy_head_rgba(width, height)
 
     triangles = _collect_glb_triangles(model_path)
-    all_pts = np.vstack([tri for tri, _ in triangles])
+    all_pts = np.vstack([tri for tri, _, _ in triangles])
     center = (all_pts.min(axis=0) + all_pts.max(axis=0)) * 0.5
     span = np.maximum(all_pts.max(axis=0) - all_pts.min(axis=0), 1e-6)
     scale = 0.82 * min(width / span[0], height / max(span[1], span[2], 1e-6))
@@ -728,7 +782,7 @@ def _render_model_rgba(model_path, width, height):
     light /= np.linalg.norm(light)
     projected = []
 
-    for tri, color in triangles:
+    for tri, color, alpha in triangles:
         pts = (tri - center) * scale
         x = pts[:, 0] + width * 0.5
         y = -pts[:, 1] + height * 0.52
@@ -740,12 +794,12 @@ def _render_model_rgba(model_path, width, height):
             continue
         normal = normal / norm
         shade = 0.42 + 0.58 * max(0.0, float(np.dot(normal, light)))
-        projected.append((float(np.mean(z)), p2, np.clip(color * shade, 0, 255).astype(np.uint8)))
+        projected.append((float(np.mean(z)), p2, np.clip(color * shade, 0, 255).astype(np.uint8), alpha))
 
-    for _, p2, color in sorted(projected, key=lambda item: item[0]):
+    for _, p2, color, alpha in sorted(projected, key=lambda item: item[0]):
         if np.max(p2[:, 0]) < 0 or np.min(p2[:, 0]) >= width or np.max(p2[:, 1]) < 0 or np.min(p2[:, 1]) >= height:
             continue
-        cv2.fillConvexPoly(canvas, p2, (int(color[0]), int(color[1]), int(color[2]), 245))
+        cv2.fillConvexPoly(canvas, p2, (int(color[0]), int(color[1]), int(color[2]), int(np.clip(alpha * 245, 0, 245))))
 
     alpha = canvas[:, :, 3]
     if np.count_nonzero(alpha) == 0:
@@ -790,8 +844,8 @@ def _detect_head_anchor(frame, anchor_mode, head_scale, vertical_offset, pose_re
 def _apply_proxy_head(frame, anchor, model_path=None):
     if anchor is None:
         return frame
-    ow = max(24, int(anchor[2]))
-    oh = max(32, int(anchor[3]))
+    ow = max(24, int(round(anchor[2] / 8.0) * 8))
+    oh = max(32, int(round(anchor[3] / 8.0) * 8))
     try:
         head_rgba = _render_model_rgba(model_path, ow, oh) if model_path else _make_proxy_head_rgba(ow, oh)
     except Exception as e:
