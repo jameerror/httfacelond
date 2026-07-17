@@ -2,69 +2,71 @@
 
 Hardware-accelerated AI face swap studio for images and videos. Built with Python, Gradio, ONNX Runtime, InsightFace, MediaPipe, and OpenCV.
 
-## ระบบที่มีในโปรแกรม
+## Features
 
 ### Image Swap
 
-- สลับหน้าในภาพนิ่งจาก source face ไปยัง target image
-- รองรับ batch image swap สำหรับหลายภาพพร้อมกัน
-- อัปโหลด target images แบบทั้งโฟลเดอร์ผ่านหน้าเว็บได้
-- ใส่ local folder path โดยตรงได้ เช่น `C:\Users\fds\Pictures\targets`
-- บันทึกผล batch ลงโฟลเดอร์อัตโนมัติ และสร้างไฟล์ `swapped_batch_results.zip`
-- แสดงผล batch ผ่าน gallery ในหน้าเว็บ
-- รองรับไฟล์ภาพ `.jpg`, `.jpeg`, `.png`, `.webp`, `.bmp`, `.tif`, `.tiff`
+- Swap a face from a source image onto a target image.
+- Batch image swap for multiple target images at once.
+- Upload a whole target image folder from the web UI.
+- Paste a local target folder path directly, for example `C:\Users\fds\Pictures\targets`.
+- Automatically saves batch results to an output folder.
+- Creates `swapped_batch_results.zip` for batch outputs.
+- Shows batch results in a gallery inside the web UI.
+- Supports `.jpg`, `.jpeg`, `.png`, `.webp`, `.bmp`, `.tif`, and `.tiff` images.
 
 ### Video Swap
 
-- สลับหน้าในวิดีโอจาก source face image ไปยัง target video
-- เลือก frame เพื่อ preview ก่อน render เต็มได้
-- แสดง estimated processing time ตามจำนวน frame และโหมด CPU/GPU
-- แสดง real-time progress, speed, ETA และ logs ระหว่างประมวลผล
-- รองรับ frame step/skip สำหรับลดเวลาประมวลผล
-- รองรับ threaded execution และเลือกจำนวน concurrent workers ได้
-- รวมเสียงเดิมกลับเข้า output video หลังประมวลผล
+- Swap a face from a source image onto a target video.
+- Preview any selected video frame before rendering the full video.
+- Estimate processing time based on frame count and CPU/GPU mode.
+- Display real-time progress, speed, ETA, and logs during rendering.
+- Use frame step/skip controls to reduce processing time.
+- Configure threaded execution with selectable concurrent workers.
+- Merge the original audio track back into the output video.
 
-### Face Detection และ Masking
+### Face Detection And Masking
 
-- ใช้ InsightFace SCRFD เป็น detector หลัก
-- มี YOLOv11-Face เป็นตัวเลือก detector สำรอง
-- Auto-threshold fallback เมื่อหาใบหน้าไม่เจอใน threshold แรก
-- Auto-rotation recovery สำหรับภาพหรือวิดีโอที่ใบหน้าเอียง/หมุน
-- รองรับ InsightFace 106-point landmark mask
-- รองรับ MediaPipe FaceMesh 468-point mask
-- มี soft feathering เพื่อลดขอบแข็งบริเวณใบหน้า
+- Uses InsightFace SCRFD as the default face detector.
+- Includes YOLOv11-Face as an optional target face detector.
+- Automatic threshold fallback when no face is detected at the initial confidence level.
+- Auto-rotation recovery for tilted, sideways, or rotated faces.
+- InsightFace 106-point landmark mask.
+- MediaPipe FaceMesh 468-point mask.
+- MediaPipe FaceMesh 3D Pose mask option.
+- Soft feathering to reduce hard face edges and visible seams.
 
-### Realism และ Enhancement
+### Realism And Enhancement
 
-- Face restorer/enhancer:
+- Face restorer/enhancer options:
   - GFPGANv1.4
   - CodeFormer
   - GPEN-BFR-512
   - GPEN-BFR-1024
-- ปรับ enhance strength ได้
-- Match lighting และ skin tone ด้วย color transfer
-- Match face shape aspect ratio
-- ปรับ face swap blend strength เพื่อคุมความเหมือน/ความเนียน
-- ปรับ face crop upscale resolution ได้ตั้งแต่ 128 ถึง 2048
-- Occlusion masking เพื่อเก็บวัตถุด้านหน้า เช่น มือ ผม แขน หรือเสื้อผ้า
+- Adjustable enhancement strength.
+- Lighting and skin tone matching through color transfer.
+- Face shape aspect ratio matching.
+- Face swap blend strength control for identity strength and realism.
+- Face crop upscale resolution from 128 to 2048.
+- Occlusion masking to preserve foreground objects such as hands, hair, arms, and clothing.
 
-### Hardware และ Models
+### Hardware And Models
 
-- รองรับ GPU mode ผ่าน ONNX Runtime CUDA ถ้ามี GPU ที่ใช้งานได้
-- รองรับ CPU-only mode
-- เลือก GPU device ได้เมื่อมีหลาย GPU
-- เลือก swapper model ได้:
+- GPU mode through ONNX Runtime CUDA when a compatible GPU is available.
+- CPU-only mode.
+- GPU device selection for multi-GPU systems.
+- Swapper model selection:
   - `inswapper_128_fp16.onnx`
   - `inswapper_128.onnx`
-- มีปุ่ม clear VRAM เพื่อ unload models ระหว่างใช้งาน
+- Clear VRAM button to unload models during a session.
 
-## Installation & Setup
+## Installation And Setup
 
 ### Windows PC (venv)
 
-1. ติดตั้ง Python 3.12 และเพิ่ม Python เข้า PATH
-2. ดับเบิลคลิก `install_windows_venv.bat`
-3. หลังติดตั้งเสร็จ เปิดโปรแกรมด้วย `run_studio.bat`
+1. Install Python 3.12 and add Python to PATH.
+2. Double-click `install_windows_venv.bat`.
+3. After installation finishes, launch the app with `run_studio.bat`.
 
 ### Linux (Debian / Ubuntu - Conda)
 
@@ -77,43 +79,43 @@ python app.py
 
 ## Web Interface
 
-หลังเปิดโปรแกรม เข้าใช้งานที่:
+After launching the app, open:
 
 ```text
 http://127.0.0.1:7860
 ```
 
-หรือ:
+or:
 
 ```text
 http://localhost:7860
 ```
 
-## วิธีใช้แบบย่อ
+## Quick Usage
 
-### ใช้ Image Swap ภาพเดียว
+### Single Image Swap
 
-1. อัปโหลด `Source Face`
-2. อัปโหลด `Target Image`
-3. เลือก model/settings ตามต้องการ
-4. กด `Start Face Swap`
+1. Upload `Source Face`.
+2. Upload `Target Image`.
+3. Choose the model and settings you want.
+4. Click `Start Face Swap`.
 
-### ใช้ Batch Image Swap ทั้งโฟลเดอร์
+### Batch Image Swap With A Folder
 
-1. อัปโหลด `Source Face`
-2. อัปโหลดโฟลเดอร์ในช่อง `Batch Target Images / Folder Upload`
-3. หรือใส่ path ในช่อง `Batch Target Local Folder Path`
-4. กด `Start Batch Folder Swap`
-5. ผลลัพธ์จะอยู่ใน gallery, output folder และ zip file
+1. Upload `Source Face`.
+2. Upload a folder in `Batch Target Images / Folder Upload`.
+3. Or paste a folder path in `Batch Target Local Folder Path`.
+4. Click `Start Batch Folder Swap`.
+5. Results appear in the gallery, output folder, and zip file.
 
-### ใช้ Video Swap
+### Video Swap
 
-1. อัปโหลด `Source Face Image`
-2. อัปโหลด `Target Video`
-3. เลือก frame แล้วกด preview ถ้าต้องการตรวจหน้าก่อน
-4. กด `Start Face Swap Video`
+1. Upload `Source Face Image`.
+2. Upload `Target Video`.
+3. Select a frame and generate a preview if needed.
+4. Click `Start Face Swap Video`.
 
-## Model Sources & Credits
+## Model Sources And Credits
 
 The AI models are automatically downloaded from these sources:
 
